@@ -16,6 +16,8 @@ Example:
     track2=reader.GetTrack(2)                            # track 2
 """
 #!/usr/bin/env python
+from __future__ import (absolute_import, division, print_function,
+                        unicode_literals)
 import sys
 import glob
 import numbers
@@ -23,6 +25,9 @@ import logging
 import numpy as np
 import h5py
 from numpy.lib.recfunctions import append_fields
+# always use generators
+if sys.version_info[0] == 2:
+    range = xrange
 
 
 def PeriodicDistance(x, y, BoxSize, axis=-1):
@@ -83,6 +88,7 @@ class HBTReader:
         self.MaxSnap = int(self.Options['MaxSnapshotIndex'])
         self.BoxSize = float(self.Options['BoxSize'])
         self.Softening = float(self.Options['SofteningHalo'])
+        self._redshifts = None
 
         try:
             lastfile = sorted(
@@ -123,8 +129,16 @@ class HBTReader:
             self.OmegaM0 = file['/Cosmology/OmegaM0'][0]
             self.OmegaLambda0 = file['/Cosmology/OmegaLambda0'][0]
 
+    @property
+    def redshifts(self):
+        if self._redshifts is None:
+            scales = np.array(
+                [self.GetScaleFactor(isnap) for isnap in self.Snapshots()])
+            self._redshifts = 1/scales - 1
+        return self._redshifts
+
     def Snapshots(self):
-        return np.arange(self.MinSnap, self.MaxSnap + 1)
+        return np.arange(self.MinSnap, self.MaxSnap+1, dtype=int)
 
     def GetFileName(self, isnap, ifile=0, filetype='Sub'):
         """Returns filename of an HBT snapshot
@@ -174,7 +188,7 @@ class HBTReader:
             (numpy.ndarray): array of nested indices
         """
         nests = []
-        for i in xrange(max(self.nfiles, 1)):
+        for i in range(max(self.nfiles, 1)):
             with self.OpenFile(isnap, i) as subfile:
                 nests.extend(subfile['NestedSubhalos'][...])
         return np.array(nests)
@@ -219,7 +233,7 @@ class HBTReader:
         if type(selection) is list:
             selection = tuple(selection)
 
-        for i in xrange(max(self.nfiles, 1)):
+        for i in range(max(self.nfiles, 1)):
             if show_progress:
                 sys.stdout.write(".")
                 sys.stdout.flush()
@@ -276,7 +290,7 @@ class HBTReader:
 
         subhalos = []
         offset = 0
-        for i in xrange(max(self.nfiles, 1)):
+        for i in range(max(self.nfiles, 1)):
             with self.OpenFile(isnap, i, filetype) as subfile:
                 if subindex is None:
                     subhalos.append(subfile[filetype + 'haloParticles'][...])
@@ -299,7 +313,7 @@ class HBTReader:
         multiple-file outputs)
         """
         offset = 0
-        for i in xrange(max(self.nfiles, 1)):
+        for i in range(max(self.nfiles, 1)):
             with self.OpenFile(isnap, i) as subfile:
                 nsub = subfile['Subhalos'].shape[0]
                 if offset + nsub > subindex:
@@ -318,35 +332,32 @@ class HBTReader:
         #subhalos=LoadSubhalos(isnap, rootdir)
         #return subhalos[subhalos['TrackId']==trackId]
         if self.nfiles:
-            subid = np.flatnonzero(self.LoadSubhalos(isnap, 'TrackId') == trackId)[0]
+            subid = np.flatnonzero(
+                self.LoadSubhalos(isnap, 'TrackId') == trackId)[0]
         else:
             subid = trackId
         return self.LoadSubhalos(isnap, subid)
 
+    def GetTrackSnapshot(self, trackId, isnap, fields=None):
+        """Get track information for a single snapshot"""
+        s = self.GetSub(trackId, isnap)
+        if fields is not None:
+            return s[fields]
+        return s
+
     def GetTrack(self, trackId, fields=None, MaxSnap=None):
         """Loads an entire track of the given ``trackId``.
         """
-        track = []
-        snaps = []
-        scales = []
         snapbirth = self.GetSub(trackId)['SnapshotIndexOfBirth']
 
-        if MaxSnap is None:
-            isnap_range = range(snapbirth, self.MaxSnap + 1)
-        else:
-            isnap_range = range(snapbirth, MaxSnap + 1)
+        snaps = np.arange(snapbirth, self.MaxSnap+1, dtype=int)
+        track = np.array(
+            [self.GetTrackSnapshot(trackId, isnap, fields=fields)
+             for isnap in snaps])
+        scales = np.array([self.GetScaleFactor(isnap) for isnap in snaps])
 
-        for isnap in isnap_range:
-            s = self.GetSub(trackId, isnap)
-            a = self.GetScaleFactor(isnap)
-            if fields is not None:
-                s = s[fields]
-            track.append(s)
-            snaps.append(isnap)
-            scales.append(a)
         return append_fields(
-            np.array(track), ['Snapshot', 'ScaleFactor'],
-            [np.array(snaps), np.array(scales)],
+            track, ['Snapshot', 'ScaleFactor'], [snaps,scales],
             usemask=False)
 
     def GetScaleFactor(self, isnap):
